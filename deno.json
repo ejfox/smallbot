@@ -1,0 +1,19 @@
+{
+  "name": "smallbot",
+  "version": "0.1.0",
+  "tasks": {
+    "dev": "deno run --allow-net --allow-read --allow-env --allow-write --watch main.ts",
+    "serve": "deno run --allow-net --allow-read --allow-env --allow-write main.ts"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "deno.unstable"]
+  },
+  "imports": {
+    "@/": "./src/"
+  },
+  "fmt": {
+    "indentWidth": 2,
+    "singleQuote": false,
+    "semiColons": true
+  }
+} 
