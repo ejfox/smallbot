@@ -10,10 +10,13 @@ export interface ExecutionResult {
   error?: string;
 }
 
-// Path to the smallweb root directory
-const SMALLWEB_ROOT = "/Users/ejfox/smallweb";
-// Base domain for Smallweb apps
-const BASE_DOMAIN = "tools.ejfox.com";
+// Use Smallweb environment variables instead of hardcoded paths
+// These are automatically injected by Smallweb
+const SMALLWEB_ROOT = Deno.env.get("SMALLWEB_DIR") || "/Users/ejfox/smallweb";
+// Use the app's domain from environment variables or fallback
+const BASE_DOMAIN = Deno.env.get("SMALLWEB_DOMAIN") || "tools.ejfox.com";
+// Maximum number of lines to read from a file
+const MAX_READ_LINES = 420;
 
 /**
  * Execute commands embedded in the AI response
@@ -47,6 +50,13 @@ export async function executeCommands(response: string): Promise<{
 
   // Process <fetch> commands
   processedResponse = await processFetchCommands(
+    processedResponse,
+    executionResults,
+    errorMessages
+  );
+
+  // Process <read> commands
+  processedResponse = await processReadFileCommands(
     processedResponse,
     executionResults,
     errorMessages
@@ -266,6 +276,100 @@ async function processFetchCommands(
       processedResponse = processedResponse.replace(
         fullMatch,
         `❌ Failed to fetch ${url}: ${error.message}`
+      );
+    }
+
+    results.push(result);
+  }
+
+  return processedResponse;
+}
+
+/**
+ * Process <read> commands in the response
+ * This allows the AI to read file contents
+ */
+async function processReadFileCommands(
+  response: string,
+  results: ExecutionResult[],
+  errorMessages: string[]
+): Promise<string> {
+  // Match both full file reads: <read file="path/to/file.js">
+  // And line range reads: <read file="path/to/file.js" lines="1-50">
+  const readFileRegex =
+    /<read\s+file="([^"]+)"(?:\s+lines="(\d+)-(\d+)")?\s*>/g;
+  let match;
+  let processedResponse = response;
+
+  while ((match = readFileRegex.exec(response)) !== null) {
+    const [fullMatch, filePath, startLineStr, endLineStr] = match;
+    const result: ExecutionResult = {
+      command: `Read file: ${filePath}${
+        startLineStr ? ` (lines ${startLineStr}-${endLineStr})` : ""
+      }`,
+      success: false,
+    };
+
+    try {
+      // Normalize the file path - remove any leading ~/ or absolute paths
+      const normalizedFilePath = filePath
+        .replace(/^~\/smallweb\//, "")
+        .replace(/^\/Users\/[^\/]+\/smallweb\//, "");
+
+      // Create the full path to the file in the smallweb root directory
+      const fullPath = `${SMALLWEB_ROOT}/${normalizedFilePath}`;
+
+      // Read the file
+      const fileContent = await Deno.readTextFile(fullPath);
+      const fileLines = fileContent.split("\n");
+      const totalLines = fileLines.length;
+
+      let contentToShow: string;
+      let contentHeader: string;
+
+      if (startLineStr && endLineStr) {
+        // Read specific line range
+        const startLine = Math.max(1, parseInt(startLineStr, 10));
+        const endLine = Math.min(totalLines, parseInt(endLineStr, 10));
+
+        // Ensure we don't read more than MAX_READ_LINES
+        const actualEndLine = Math.min(endLine, startLine + MAX_READ_LINES - 1);
+
+        // Extract the requested lines (adjusting for 0-based array indices)
+        contentToShow = fileLines
+          .slice(startLine - 1, actualEndLine)
+          .join("\n");
+        contentHeader = `Lines ${startLine}-${actualEndLine} of ${totalLines} from ${normalizedFilePath}:`;
+      } else {
+        // Read entire file (truncated if necessary)
+        const maxLines = Math.min(totalLines, MAX_READ_LINES);
+        contentToShow = fileLines.slice(0, maxLines).join("\n");
+
+        contentHeader =
+          maxLines < totalLines
+            ? `First ${maxLines} lines of ${totalLines} from ${normalizedFilePath} (truncated):`
+            : `${normalizedFilePath} (${totalLines} lines):`;
+      }
+
+      result.success = true;
+      result.output = contentToShow;
+
+      // Replace the command with the file content in the response
+      const fileExtension = normalizedFilePath.split(".").pop() || "";
+      processedResponse = processedResponse.replace(
+        fullMatch,
+        `📄 ${contentHeader}\n\`\`\`${fileExtension}\n${contentToShow}\n\`\`\``
+      );
+    } catch (error) {
+      result.error = error.message;
+
+      // Add detailed error message for the AI
+      errorMessages.push(`Error reading file "${filePath}": ${error.message}`);
+
+      // Replace the command with an error message in the response
+      processedResponse = processedResponse.replace(
+        fullMatch,
+        `❌ Failed to read file ${filePath}: ${error.message}`
       );
     }
 
